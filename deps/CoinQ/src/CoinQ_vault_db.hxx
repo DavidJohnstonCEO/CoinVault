@@ -683,12 +683,11 @@ inline Coin::HDKeychain HDKey::keychain() const
 class ExtendedKey
 {
 public:
-    ExtendedKey(const bytes_t& bytes)
-        : bytes_(bytes) { }
+    ExtendedKey(const bytes_t& bytes, const bytes_t& encryption_key = bytes_t());
 
-    const bytes_t& bytes() const { return bytes_; }
+    const bytes_t& bytes(bool get_private = false, const bytes_t& decryption_key = bytes_t()) const;
 
-    Coin::HDKeychain hdkeychain() const { return Coin::HDKeychain(bytes_); }
+    Coin::HDKeychain hdkeychain(bool get_private = false, const bytes_t& decryption_key = bytes_t()) const;
 
 private:
     friend class odb::access;
@@ -699,8 +698,44 @@ private:
     unsigned long id_;
 
     #pragma db unique
-    bytes_t bytes_;
+    bytes_t pubkey_bytes_;
+
+    #pragma db null
+    odb::nullable<bytes_t> privkey_ciphertext_;
+
+    uint64_t privkey_salt_;    
 };
+
+ExtendedKey::ExtendedKey(const bytes_t& bytes, const bytes_t& encryption_key)
+    : privkey_salt_(0)
+{
+    Coin::HDKeychain keychain(bytes);
+    if (!keychain.isPrivate()) {
+        pubkey_bytes_ = bytes;
+        return;
+    }
+
+    // TODO: Encrypt
+    privkey_ciphertext_ = bytes;
+
+    pubkey_bytes_ = keychain.getPublic().extkey();    
+}
+
+const bytes_t& ExtendedKey::bytes(bool get_private, const bytes_t& decryption_key) const
+{ 
+    if (!get_private || !privkey_ciphertext_) return pubkey_bytes_;
+
+    // TODO:Decrypt
+    return *privkey_ciphertext_;
+}
+
+Coin::HDKeychain ExtendedKey::hdkeychain(bool get_private, const bytes_t& decryption_key) const
+{
+    if (!get_private || !privkey_ciphertext_) return Coin::HDKeychain(pubkey_bytes_);
+
+    // TODO: Decrypt
+    return Coin::HDKeychain(*privkey_ciphertext_);
+}
 
 #pragma db object pointer(std::shared_ptr)
 class Key
@@ -717,7 +752,7 @@ public:
     Key(const std::shared_ptr<ExtendedKey>& extendedkey, uint32_t childnum);
 
     unsigned long id() const { return id_; }
-    bytes_t privkey() const;
+    bytes_t privkey(const bytes_t& decryption_key = bytes_t()) const;
     const bytes_t& pubkey() const { return pubkey_; }
 
 private:
@@ -751,14 +786,14 @@ inline Key::Key(const std::shared_ptr<ExtendedKey>& extendedkey, uint32_t childn
     pubkey_ = hdkeychain.pubkey();
 }
 
-inline bytes_t Key::privkey() const
+inline bytes_t Key::privkey(const bytes_t& decryption_key) const
 {
     if (!privkey_) {
         throw std::runtime_error("Key::privkey - cannot get private key from nonprivate key object.");
     }
 
     if (extendedkey_) {
-        Coin::HDKeychain hdkeychain = extendedkey_->hdkeychain();
+        Coin::HDKeychain hdkeychain = extendedkey_->hdkeychain(true, decryption_key);
         if (!hdkeychain.isPrivate()) {
             throw std::runtime_error("Key::privkey - cannot get private key from nonprivate key object.");
         }
